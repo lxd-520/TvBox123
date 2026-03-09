@@ -1,0 +1,153 @@
+import axios from 'axios';
+
+// Polyfill for older environments
+if (typeof Array.prototype.toReversed !== 'function') {
+  Object.defineProperty(Array.prototype, 'toReversed', {
+    value: function() {
+      return [...this].reverse();
+    },
+    enumerable: false
+  });
+}
+
+// URL utilities
+const resolve = (from, to) => {
+  const resolvedUrl = new URL(to, new URL(from, 'resolve://'));
+  if (resolvedUrl.protocol === 'resolve:') {
+    return resolvedUrl.pathname + resolvedUrl.search + resolvedUrl.hash;
+  }
+  return resolvedUrl.href;
+};
+
+const urljoin = (fromPath, nowPath) => {
+  fromPath = fromPath || '';
+  nowPath = nowPath || '';
+  return resolve(fromPath, nowPath);
+};
+
+// Core processing function
+const fixAdM3u8Ai = async (m3u8_url, headers = {}) => {
+  const startTime = Date.now();
+  const options = { method: 'GET', timeout: 10000, ...headers };
+
+  // Helper functions
+  const compareSameLen = (s1, s2) => {
+    let len = 0;
+    while (len < s1.length && s1[len] === s2[len]) len++;
+    return len;
+  };
+
+  const fetchM3u8 = async (url) => {
+    try {
+      const response = await axios({ url, ...options });
+      return typeof response.data === 'string' 
+        ? response.data.trim() 
+        : JSON.stringify(response.data);
+    } catch (error) {
+      console.error(`Fetch error: ${error.message}`);
+      throw error;
+    }
+  };
+
+  const parseM3u8 = async (url) => {
+    const content = await fetchM3u8(url);
+    return content.split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 0);
+  };
+
+  // Process M3U8 content
+  let currentUrl = m3u8_url;
+  let lines = await parseM3u8(currentUrl);
+  
+  // Handle nested playlists
+  const findNested = (lines) => {
+    for (const line of lines) {
+      if (line.endsWith('.m3u8') && !line.startsWith('#')) {
+        return line.startsWith('http') 
+          ? line 
+          : urljoin(currentUrl, line);
+      }
+    }
+    return null;
+  };
+
+  let nestedUrl = findNested(lines);
+  if (nestedUrl) {
+    console.log(`Found nested playlist: ${nestedUrl}`);
+    currentUrl = nestedUrl;
+    lines = await parseM3u8(currentUrl);
+  }
+
+  // Ad detection and removal
+  const { cleanSegments } = detectAndRemoveAds(lines, currentUrl);
+  
+  console.log(`Processed in ${Date.now() - startTime}ms`);
+  return cleanSegments.join('\n');
+};
+
+// Refactored ad detection
+const detectAndRemoveAds = (lines, baseUrl) => {
+  const cleanSegments = [];
+  const adSegments = [];
+  let referenceSegment = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Handle EXTINF segments
+    if (line.startsWith('#EXTINF:')) {
+      if (i + 1 < lines.length) {
+        const mediaLine = lines[i + 1].trim();
+        if (!mediaLine.startsWith('#')) {
+          // Initialize reference segment
+          if (!referenceSegment) referenceSegment = mediaLine;
+          
+          // Calculate similarity
+          const similarity = referenceSegment 
+            ? compareSameLen(referenceSegment, mediaLine) 
+            : 0;
+          
+          // Threshold-based ad detection
+          const isAd = referenceSegment 
+            ? similarity < (referenceSegment.length * 0.4) 
+            : false;
+          
+          if (isAd) {
+            adSegments.push(mediaLine);
+            i++; // Skip media line
+            continue;
+          } else {
+            cleanSegments.push(line);
+            cleanSegments.push(
+              mediaLine.startsWith('http') 
+                ? mediaLine 
+                : urljoin(baseUrl, mediaLine)
+            );
+            i++;
+            continue;
+          }
+        }
+      }
+    }
+    // Handle encryption keys
+    else if (line.includes('URI="')) {
+      const match = line.match(/URI="([^"]+)"/);
+      if (match) {
+        const fixedUri = urljoin(baseUrl, match[1]);
+        cleanSegments.push(line.replace(match[0], `URI="${fixedUri}"`));
+      } else {
+        cleanSegments.push(line);
+      }
+    }
+    // Pass-through other lines
+    else {
+      cleanSegments.push(line);
+    }
+  }
+
+  console.log(`Removed ${adSegments.length} ad segments`);
+  return { cleanSegments, adSegments };
+};
+
+export default fixAdM3u8Ai;
