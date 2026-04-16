@@ -1,0 +1,15 @@
+{
+  "name": "zyfun_danmu",
+  "pluginName": "弹幕插件",
+  "version": "1.0.0",
+  "description": "为zyfun设计的弹幕插件,将影视站的url转换为弹幕",
+  "main": "index.js",
+  "type": "module",
+  "logo": "https://zy.catni.cn/favicon.ico",
+  "pluginType": "system",
+  "author": "xiaohanys",
+  "dependencies": {
+    "fastify": "^5.6.2",
+    "sqlite3": "^5.1.0"
+  }
+}
